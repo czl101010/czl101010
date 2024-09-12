@@ -1,3 +1,4 @@
+lncRNA上游
 1.质控
 #MD5检验
 MD5sum -c MD5.txt（公司提供的MD5.txt）
@@ -66,37 +67,128 @@ samtools index ${out}_sorted.bam
 }
 done
 
-#对每个转录本单独组装预测
+#序列组装
 #!/bin/bash
-for i in /home/czl/pa/a-trans/a-hisat2/*_sorted.bam
+for i in /big/czl/pa/a-trans/a-lncRNA/04.hisat2/*_sorted.bam
 do
 {
 name=${i%_sorted.bam}
-out=${name#/home/czl/pa/a-trans/a-hisat2/}
-stringtie -B -p 36 -o /home/czl/pa/a-trans/a-stringtie/${out}_output.gtf -G /home/czl/pa/a-gene/genomic.gff \
--l ${out} -A /home/czl/pa/a-trans/a-stringtie/${out}_output.tab ${name}_sorted.bam
+out=${name#/big/czl/pa/a-trans/a-lncRNA/04.hisat2/}
+stringtie -B -p 40 -o /big/czl/pa/a-trans/a-lncRNA/05.stringtie/${out}_output.gtf -G /big/czl/pa/a-gene/pagene/genomic.gff \
+-l ${out} -A /big/czl/pa/a-trans/a-lncRNA/05.stringtie/${out}_output.tab ${name}_sorted.bam
 }
 done
 
-#将每个转录本进行merge成一个gtf文件
+#转录本合并成一个非冗余的转录本
 #!/bin/bash
-ls /home/czl/pa/a-trans/a-stringtie/*.gtf > gtf.txt
-stringtie --merge -p 16 -G /home/czl/pa/a-gene/genomic.gff -o /home/czl/pa/a-trans/a-stringtie/a_merge.gtf /home/czl/pa/a-trans/a-stringtie/gtf.txt > merge.log
-#得到一个gtf文件
-
-#利用merge得到的gtf重新对各个样本做定量 
-#!(如果用fcounts，此步不需要)
-#!/bin/bash
-for i in /home/czl/pa/a-trans/a-hisat2/*_sorted.bam
-do
-{
-name=${i%_sorted.bam}
-out=${name#/home/czl/pa/a-trans/a-hisat2/}
-stringtie -e -B -p 36 -o /home/czl/pa/a-trans/a-stringtie/r-merge/${out}_output.gtf -G /home/czl/pa/a-trans/a-stringtie/a_merge.gtf \
--l ${out} -A /home/czl/pa/a-trans/a-stringtie/r-merge/${out}_abundance.tsv ${name}_sorted.bam
-}
-done
-
+ls /big/czl/pa/a-trans/a-lncRNA/05.stringtie/*.gtf > gtf.txt
+stringtie --merge -p 36 -G /big/czl/pa/a-gene/pagene/genomic.gff -o /big/czl/pa/a-trans/a-lncRNA/05.stringtie/merge.gtf /big/czl/pa/a-trans/a-lncRNA/05.stringtie/gtf.txt
 #输出文件：(1) e2t.ctab, (2) e_data.ctab, (3) i2t.ctab, (4) i_data.ctab, and (5) t_data.ctab
 同时还有各个相应样本的.tab文件和.gtf文件
+
+3.过滤筛选lncRNA
+#转录本比较（已知与未知）
+#!/bin/bash
+ref=/big/czl/pa/a-gene/pagene/genomic.gff
+gffcompare -R -r $ref -o gffcompare /big/czl/pa/a-trans/a-lncRNA/05.stringtie/merge.gtf
+#输出6个文件，有两个输出文件在输入的merge.gtf文件夹下
+ gffcompare.annotated.gtf：存储的是StringTie组装的转录本与注释文件内的转录本的差别信息，通过class_code来表示
+ gffcompare.stats：文件存储比对结果的准确性和预测率。
+ gffcompare.loci：报告每个转录本中新的转录本位点信息
+ gffcompare.tracking：匹配样本之间的转录本
+ gffcompare.merge.gtf.refmap：这个文件包含四列信息，第一列ref_gene_id是gene symbol ，无symbol的给出的是ensemble的gene id; 
+													 第二列ref_id是指ensemble的transcript id; 
+													 第三列class_code 是“=”和“c”;第四列是cuff_id_list。
+													 这个文件指组装后与参考基因组几乎完全匹配的转录本
+ gffcompare.merge.gtf.tmap:包含了转录本的定量信息，如cov，FPKM等，可用于定量或筛选新转录本
+											 (ref_gene_id,ref_id,class_code,qry_gene_id,qry_id,num_exons,FPKM,TPM,cov,len,major_iso_id,ref_match_len)
+#观察gffcompare.merge.gtf.tmap文件中的class code
+awk '$3!~/class/ {print $3}' gffcompare.merge.gtf.tmap |sort -V | uniq -c
+
+#1过滤transcripts
+#1.1按照class code过滤
+awk '{if ($3=="u" || $3=="x" || $3=="i" || $3=="j" || $3=="o"){print $0}}' gffcompare.merge.gtf.tmap >filter1_uxijo.tmap
+	#获取transcript的ID
+awk '{print$5}' filter1_uxijo.tmap >filter1_transcript_ID
+	#根据ID提取相应的转录本
+grep -w -Ff filter1_transcript_ID -w gffcompare.annotated.gtf > filter1_transcript.gtf
+
+#1.2根据exon>1和长度>200bp进行过滤
+awk '($6>1 && $10 >=200){print $0}' filter1_uxijo.tmap >filter2_exon_length.tmap
+ #获取transcript的ID
+awk '{print $5}' filter2_exon_length.tmap > filter2_transcript_ID
+ #根据ID筛选转录本
+grep -Ff filter2_transcript_ID -w filter1_transcript.gtf > filter2_transcript.gtf
+ #去除transcript条目，只留下exon
+awk '($3=="exon"){print $0}' filter2_transcript.gtf >filter2_transcript_exon.gtf
+#根据exon位置信息提取基因组序列，组装成转录本序列
+gffread -w ./filter2_transcript_exon.fa -g /big/czl/pa/a-gene/pagene/GCA_025594305.2_ASM2559430v2_genomic.fna ./filter2_transcript_exon.gtf
+
+#2.转录本编码能力预测
+#2.1 CPC2预测(自己下载-conda下载的跑不出来
+python ~/soft/CPC2-beta/bin/CPC2.py -i ../../filter2/filter2_transcript_exon.fa -o ./cpc2_result.txt 2>>cpc2.log
+cat cpc2_result.txt |grep 'noncoding' |awk '{print $1}' > cpc2_id.txt
+#2.2 CNCI预测(根目录下存在-且会自己生成log文件
+python ~/geng/tools/CNCI/CNCI.py -f ../../filter2/filter2_transcript_exon.fa -o ./cnci_result -m ve -p 16
+cat CNCI.index |grep 'noncoding' |awk '{print $1}' > cnci_id.txt
+#2.3 PLEK预测(conda下载-无log内容输出
+PLEK.py -fasta ../../filter2/filter2_transcript_exon.fa -out ./plek_result -thread 16
+cat plek_result | grep -w 'Non-coding' |awk '{print $3}' |sed 's/>//g' >plek_id.txt
+#三个txt文件取交集-predict.txt
+grep -xF -f cnci_id.txt cpc2_id.txt | grep -xF -f - plek_id.txt |sort > predict.txt
+#2.4 比对到pfam数据库
+conda install -y -c bioconda emboss pfam_scan
+	#将转录本序列翻译为6个可能的蛋白序列
+transeq ../../filter2/filter2_transcript_exon.fa filter2_trans_exon_protein.fa -frame=6
+	#搜索pfam数据库
+pfam_scan.pl -fasta ./filter2_trans_exon_protein.fa -dir /big/cl/DBase/Pfam/ -out pfam_scan.out
+	#提取结果中的coding序列
+grep -v '^#' pfam_scan.out | grep -v '^\s*$' | awk '($13< 1e-5){print $1}'| awk -F "_" '{print$1}' | sort | uniq > pfam_coding.ID
+	#从predict.txt中除去pfam_coding.txt的序列ID
+grep -v -F -f ./pfam/pfam_coding.ID ./predict.txt >predict_pfam.txt
+	#从ID文件提取GTF文件
+grep -Ff ../predict/predict_pfam.txt  -w ../filter2/filter2_transcript_exon.gtf >filter3_nocoding_trans.gtf
+	#从GTF文件提取fasta文件
+gffread -w filter3_nocoding_trans.fa -g ~/czl-link/pa/a-gene/pagene/GCA_025594305.2_ASM2559430v2_genomic.fna filter3_nocoding_trans.gtf
+#2.5比对到NR库
+wget https://ftp.ncbi.nlm.nih.gov/blast/db/FASTA/nr.gz
+	#建库
+diamond makedb --in nr.faa -d nr
+	#比对
+diamond blastx -e 1e-5 -d /big/czl/DBase/NR/nr -q filter3_nocoding_trans.fa -f 6 -p 20 -o ./NR_matches.txt
+	#提取NR_matches.txt中的序列ID
+awk '($11<1e-2){print $1}' NR_matches.txt |sort |uniq > NR_ID.txt
+	#从predict_pfam.txt中去掉NR_ID.txt包含的序列
+grep -v -Ff NR_ID.txt -w ../predict/predict_pfam.txt > predict_pfam_NR.txt
+	#从ID文件提取GTF文件
+grep -Ff predict_pfam_NR.txt -w filter3_nocoding_trans.gtf > filter4_nocoding_trans.gtf
+grep -Ff predict_pfam_NR.txt -w ../../05.stringtie/merge.gtf > filter4_nocoding_trans.gtf
+#过滤低表达的lncRNA后进行gtf提取
+#得到lncRNA.gtf&提取fasta序列
+gffread -w ./lncRNA.fa -g /big/czl/pa/a-gene/pagene/GCA_025594305.2_ASM2559430v2_genomic.fna ./lncRNA.gtf
+#比对到NONCODE
+wget http://www.noncode.org/datadownload/NONCODEv6_fruitfly.fa.gz
+md5sum NONCODEv6_fruitfly.fa.gz
+gunzip NONCODEv6_fruitfly.fa.gz
+makeblastdb -in NONCODEv6_fruitfly.fa -dbtype nucl -parse_seqids -out noncode_ff
+blastn -db /big/czl/DBase/NONCODE/noncode_ff -query ./lncRNA.fa -out ./lncRNA_noncode.txt -evalue 1e-2 -num_threads 36 -outfmt 6
+
+4.定量
+#1.拿到GTF文件进行转录本定量并过滤低表达lncRNA
+	#用stringtie得到的merge后的GTF进行定量
+#!/bin/bash
+/home/czl/soft/subread-2.0.6_featurecounts/bin/featureCounts -T 20 -p -t transcript -B -C -f -g transcript_id \
+-a /big/czl/pa/a-trans/a-lncRNA/06.gffcompare/filter3/filter4_nocoding_trans.gtf -o /big/czl/pa/a-trans/a-lncRNA/07.fcounts/lncRNA/count_out_lncRNA.txt \
+/big/czl/pa/a-trans/a-lncRNA/04.hisat2/*_sorted.bam
+	#计算FPKM
+	见"FPKM"代码块
+ #提取第一行ID文件（对过滤FPKM后的文件进行了改名好区分）
+awk '{print $1}' lncRNA_by_fpkm.txt > lncRNA_by_FPKM_id
+ #提取GTF文件
+grep -Ff ./lncRNA_by_FPKM_id -w ./filter4_nocoding_trans.gtf >lncRNA.gtf
+#2.再次fcounts
+#!/bin/bash
+/home/czl/soft/subread-2.0.6_featurecounts/bin/featureCounts -T 20 -p -t transcript -f -g transcript_id \
+-a /big/czl/pa/a-trans/a-lncRNA/06.gffcompare/filter3/lncRNA.gtf -o /big/czl/pa/a-trans/a-lncRNA/07.fcounts/lncRNA/count_out_lncRNA.txt \
+/big/czl/pa/a-trans/a-lncRNA/04.hisat2/*_sorted.bam
 
