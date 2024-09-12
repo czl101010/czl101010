@@ -1,0 +1,105 @@
+古早mRNA分析流程，其中代码不具有参考性
+1.下载数据
+<path to aspera executables> -i <path/to/key-file> -QT -l 100m -k1 -d 
+<path/to/folder-with-file(s)> subasp@upload.ncbi.nlm.nih.gov:uploads/<user@email.com_xxxxx>
+示例：
+ascp  -vQT -l 500m -P33001 -k 1 -i \
+~/.aspera/connect/etc/asperaweb_id_dsa.openssh \
+era-fasp@fasp.sra.ebi.ac.uk:/vol1/fastq/SRR122/079/SRR12207279/SRR12207279_1.fastq.gz  ./
+主要使用参数
+-v 详细模式
+-Q 用于自适应流量控制，磁盘限制所需
+-T 设置为无需加密传输
+-l 最大下载速度，一般设为500m
+-P TCP 端口，一般为33001
+-k 断点续传，通常设为 1
+-i 免密下载的密钥文件
+
+
+prefetch='/home/czl/soft/sratoolkit.2.11.3-centos_linux64/bin/prefetch'
+out_dir='/home/czl/test'
+SRA_list='/home/czl/test/down.txt'
+$prefetch -O $out_dir --option-file $SRA_list
+
+2.质控
+fastqc -o ~/test/fastqc/ ~/test/xuediao/ferret-20d-肝-S1_FRAS210069507-1r_1.clean.fq.gz
+
+#可以同时检查正反向原始数据：
+fastqc -o fastqc -t 20 R1.fastq R2.fastq
+#对于大批量的数据，也可以用过管道命令和shell脚本进行批量处理：
+ls rawdata/*fq | while read id; do fastqc -o fastqc -q -t 20 $id; done
+#或者后台运行模式（一次提交多任务，所以核数要调小）：
+ls rawdata/*fq | while read id; do nohup fastqc -o fastqc -q -t 2 $id & done
+#上面的while循环是很常用的一种文档批处理方法，注意变量的运算使用的是通配符而非正则表达式。对引用标准输入还可使用xargs函数：
+ls rawdata/*fq | xargs -n 1 -P 5 fastqc -o fastqc -q -t 10
+#有时候一个项目有大批量样品甚至大批量文库，需要合并来检测质量并做报告，这时候可以使用以下命令合并序列文件：
+cat *1.fq > total.R1.fq
+cat *2.fq > total.R2.fq
+multiqc /home/czl/test/fastqc
+
+conda install -c conda-forge git
+git clone https://github.com/mjain-lab/NGSQCToolkit
+给IlluQC_PRLL.pl权限
+chmod 755 IlluQC_PRLL.pl
+~/soft/NGSQCToolkit/QC/IlluQC_PRLL.pl -pe ~/test/rawdata/xuediao/ferret-20d-肝-S1_FRAS210069507-1r_1.clean.fq.gz ~/test/rawdata/xuediao/ferret-20d-肝-S1_FRAS210069507-1r_2.clean.fq.gz 2 A -o ./test/NGS/
+
+3.序列对比
+下载
+conda install -c bioconda hisat2=2.1.0
+下载雪貂参考基因组（ensemble网站）
+wget "https://ftp.ensembl.org/pub/release-110/fasta/mustela_putorius_furo/dna/Mustela_putorius_furo.MusPutFur1.0.dna.toplevel.fa.gz"
+单个序列比对：
+建索引：hisat2-build -p 12 Mustela_putorius_furo.MusPutFur1.0.dna.toplevel.fa xuediaoindex
+对比：hisat2 -p 16 -x xuediaoindex -1 ~/test/rawdata/xuediao/ferret-20d-肝-S1_FRAS210069507-1r_1.clean.fq.gz -2 ~/test/rawdata/xuediao/ferret-20d-肝-S1_FRAS210069507-1r_2.clean.fq.gz -S ~/test/hisat2/507.sam
+输出文件：507.sam
+
+多个序列比对：(一一对应）
+#!/bin/bash
+a=(1 2 3)
+b=(507 508 509)
+for ((i=0;i<=2;i++)
+  do
+  {
+    hisat2 -p 16 -x xuediaoindex -1 ~/test/rawdata/xuediao/ferret-20d-gan-S${a[i]}_FRAS210069${b[i]}-1r_1.clean.fq.gz -2 ~/test/rawdata/xuediao/ferret-20d-gan-S${a[i]}_FRAS210069507-1r_2.clean.fq.gz -S ~/test/hisat2/$b[i].sam
+  }
+    done
+输出文件：507~509.sam
+
+4.samtools
+示例：
+for i in `seq 56 62`
+  do
+    samtools view -S SRR35899${i}.sam -b > SRR35899${i}.bam
+    samtools sort SRR35899${i}.bam -o SRR35899${i}_sorted.bam
+    samtools index SRR35899${i}_sorted.bam
+    done
+    实操：
+    #!/bin/bash
+    for ((i=507;i<=509;i++))
+      do
+      {
+        samtools view -S ${i}.sam -b > ${i}.bam
+        samtools sort ${i}.bam -o ${i}_sorted.bam
+        samtools index ${i}_sorted.bam
+      }
+        done
+        输出文件：507~509._sorted.bam.bai
+
+5.定量
+软件下载
+wget "https://sourceforge.net/projects/subread/files/subread-2.0.6/subread-2.0.6-Linux-x86_64.tar.gz" --no-check-certificate
+软件解压
+tar -zxvf subread-2.0.6-Linux-x86_64.tar.gz
+开始计数
+~/soft/subread-2.0.6-Linux-x86_64/bin/featureCounts -T 16 -p -a ~/test/rawdata/xuediao-genome/Mustela_putorius_furo.MusPutFur1.0.110.gtf -o ~/test/hisat2/featurecount_507.txt 507_sorted.bam
+输出文件
+featurecount_507.txt和featurecount_507.txt.summary
+
+多组数据进行计数：
+#!/bin/bash
+for ((i=507;i<=509;i++))
+  do
+    {
+    ~/soft/subread-2.0.6-Linux-x86_64/bin/featureCounts -T 16 -p -a ~/test/rawdata/xuediao-genome/Mustela_putorius_furo.MusPutFur1.0.110.gtf -o ~/test/hisat2/featurecount_${i}.txt ~/test/hisat2/${i}_sorted.bam
+    }
+  done
