@@ -1,0 +1,100 @@
+前期完成质控
+1.对原始序列进行长度统计
+#!/bin/bash
+for i in /big/czl/pa/a-trans/a-sRNA/rawdata/00.CleanData/*.fa
+do
+{
+name=${i%.fa}
+out=${name#/big/czl/pa/a-trans/a-sRNA/rawdata/00.CleanData/}
+seqkit seq -m 18 -M 30 ${name}.fa > ${out}_seq.fa
+}
+done
+
+2.去除其他小RNA
+# 输入文件路径
+input_file = "/big/czl/pa/a-trans/a-sRNA/blastn_db/rRNA/NC-R-2-rRNA.txt"
+# 输出文件路径
+output_file = "/big/czl/pa/a-trans/a-sRNA/blastn_db/rRNA/NC-R-2-ID.txt"
+# 打开输入文件和输出文件
+with open(input_file, "r") as file_in, open(output_file, "w") as file_out:
+    # 逐行读取输入文件
+    for line in file_in:
+        # 使用空格或制表符分割行，并获取第一列数据
+        columns = line.strip().split()
+        if columns:
+            first_column = columns[0]
+            # 将第一列数据写入输出文件
+            file_out.write(first_column + "\n")
+# 提示操作完成
+print("提取第一列完成！")
+
+#运行提取第一列脚本
+python ../../shell/blastn1.py
+#去除第一列中的重复序列
+sort -k NC-R-1-ID.txt |uniq NC-R-1-ID.txt > NC-R-1_ID.txt
+#利用seqkit grep工具去除原始序列中的rRNA序列
+seqkit grep -v -f NC-R-1_ID.txt NC-R-1.clean_seq.fa >NC-R-1.clean_seq_rRNA.fa
+
+？打开之后显示的序列长度与（原始序列-处理之后序列）/2对不上 但是用sort命令查看可以对上：
+sort -k1 NC-R-1_ID.txt |uniq|less -SN
+后续：tRNA可以对上
+
+3.比对参考基因组
+#提取第一列ID
+cat  NC-R-1.clean_seq_RNA.fa | awk '{if ($0 ~ /^>/) {print $1} else {print $0}}' \
+| awk -F ":" '{if ($0 ~ /^>/) {printf(">NC1_%s.%s\n",$6,$7)} else {print $0}}' \
+> NC-R-1.ID_seq_RNA.fa
+
+#折叠 FASTA 文件中的读数，确保每个序列只出现一次。
+为了表示序列代表的读数次数，每个FASTA标识符都会加上一个后缀。
+例如，代表数据中10个读数的序列将在标识符后添加 _x10 后缀
+collapse_reads_md.pl NC-R-1.ID_seq_RNA.fa NC1 > NC-R-1.ID_seq_RNA_collapse.fa
+(匹配ID的时候会自动生成相应的ID，但是在后续预测novelmiRNA时是自动分配到参考基因组上的
+所以在这里也不是大问题,标准命名更好)
+#!/bin/bash
+index=/big/czl/pa/a-gene/index/a-index-bowtie1/pa1_index
+for i in /big/czl/pa/a-trans/a-sRNA/rawdata/00.CleanData/*.ID_seq_RNA.fa
+do 
+{
+name=${i%.ID_seq_RNA.fa}
+out=${name#/big/czl/pa/a-trans/a-sRNA/rawdata/00.CleanData/}
+mapper.pl ${name}.ID_seq_RNA.fa -v -c -r 10 -q -p ${index} -s /big/czl/pa/a-trans/a-sRNA/mirdeep2/mapper/${out}.ID_seq_RNA.fa \
+-t /big/czl/pa/a-trans/a-sRNA/mirdeep2/mapper/${out}.arf -o 24 
+}
+done
+
+#从mirbase下载的序列需要进行windows换行符转换成unix
+conda install -y -c conda-forge dos2unix 
+dos2unix hexapoda_mature.fa
+#再次进行预测
+#六足类
+#!/bin/bash
+for i in /big/czl/pa/a-trans/a-sRNA/mirdeep2/mapper/*.fa
+do 
+{
+name=${i%.fa}
+out=${name#/big/czl/pa/a-trans/a-sRNA/mirdeep2/mapper/}
+miRDeep2.pl ${name}.fa /big/czl/pa/a-gene/pagenomic.fa /big/czl/pa/a-trans/a-sRNA/mirdeep2/mapper/${out}.arf \
+none /big/czl/pa/a-trans/a-sRNA/mirdeep2/hexapoda_mature.fa none -v -b 4
+}
+done
+
+4.定量
+#1.mapper
+#!/bin/bash
+index=/big/czl/pa/a-gene/index/a-index-bowtie1/pa1_index
+name=/big/czl/pa/a-trans/a-sRNA/06.mirdeep2/mapper/merge_RNA.fa
+mapper.pl ${name} -v -c -r 10 -q -p ${index} -t /big/czl/pa/a-trans/a-sRNA/06.mirdeep2/mapper/merge_r.arf -o 30
+#2.mirdeep
+#!/bin/bash
+name=/big/czl/pa/a-trans/a-sRNA/06.mirdeep2/mapper/merge_RNA.fa
+miRDeep2.pl ${name} /big/czl/pa/a-gene/pagenomic.fa /big/czl/pa/a-trans/a-sRNA/06.mirdeep2/mapper/merge_r.arf \
+none /big/czl/pa/a-trans/a-sRNA/06.mirdeep2/hexapoda_mature.fa none -v -b 4
+#3.提取 hex_r_pre.fa& hex_r_mature.fa
+cat result_21_12_2023_t_11_18_05.csv | awk '{print ">"$1"\n"$13}' | sed 's/u/t/g' >hex_r_mature.fa
+cat result_21_12_2023_t_11_18_05.csv | awk '{print ">"$1"\n"$15}' | sed 's/u/t/g' >hex_r_pre.fa
+#4.quantifier
+#!/bin/bash
+index=/big/czl/pa/a-trans/a-sRNA/06.mirdeep2
+quantifier.pl -p ${index}/quantifier/hex_r_pre.fa -m ${index}/quantifier/hex_r_mature.fa -r ${index}/mapper/merge_RNA.fa
+
