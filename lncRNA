@@ -1,0 +1,102 @@
+1.质控
+#MD5检验
+MD5sum -c MD5.txt（公司提供的MD5.txt）
+#输出结果为<文件名>：OK
+
+#fastqc检验
+#!/bin/bash
+for i in /home/czl/american/a-trans/a-lncRNA/01.RawData/*
+do
+{
+fastqc -t 36 -o  /home/czl/american/a-trans/a-trans-fastqc1 $i/*_1.fq.gz $i/*_2.fq.gz
+}
+done
+#输出结果为fastqc报告（主要是网页版）
+
+#总结fastqc报告
+multiqc .（在fastqc文件输出目录下）
+
+#进行质控
+#!/bin/bash
+for i in /home/czl/pa/a-trans/a-lncRNA/00.CleanData/*
+do
+{
+trim_galore -q 25 --phred33 --stringency 3 --length 36 --paired $i/*_1.clean.fq.gz $i/*_2.clean.fq.gz --gzip -o /home/czl/pa/a-trans/a-trans-trim
+}
+done
+
+#再次fastqc检验
+#!/bin/bash
+for i in /home/czl/pa/a-trans/a-trans-trim/*_1.clean_val_1.fq.gz
+do
+{
+name=${i%_1.clean_val_1.fq.gz}
+fastqc -t 10 -o /home/czl/pa/a-trans/a-trans-fastqc/a-trans-fastqc2 ${name}_1.clean_val_1.fq.gz ${name}_2.clean_val_2.fq.gz
+}
+done
+#输出质控报告
+multiqc .
+#与之前的质控报告进行对比
+
+2.建立索引并且进行序列比对并进行组装和转录本定量
+#建索引
+hisat2-build -p 36 /big/czl/pa/a-gene/pagene/GCA_025594305.2_ASM2559430v2_genomic.fna pav2_index
+#hisat2比对
+#!/bin/bash
+index=/big/czl/pa/a-gene/index/index-hisat2-v2/pav2_index
+for i in /big/czl/pa/a-trans/a-lncRNA/03.trim/*_1.clean_val_1.fq.gz
+do
+{
+name=${i%_1.clean_val_1.fq.gz}
+out=${name#/big/czl/pa/a-trans/a-lncRNA/03.trim/}
+hisat2 -p 40 -x ${index} -1 ${name}_1.clean_val_1.fq.gz -2 ${name}_2.clean_val_2.fq.gz -S /big/czl/pa/a-trans/a-lncRNA/04.hisat2/${out}_tr.sam
+}
+done
+#输出sam文件
+
+#!/bin/bash
+for i in /big/czl/pa/a-trans/a-lncRNA/04.hisat2/*.sam
+do
+{
+name=${i%.sam}
+out=${name#/big/czl/pa/a-trans/a-lncRNA/04.hisat2/}
+samtools view -S ${out}.sam -b > ${out}.bam
+samtools sort ${out}.bam -o ${out}_sorted.bam
+samtools index ${out}_sorted.bam
+}
+done
+
+#对每个转录本单独组装预测
+#!/bin/bash
+for i in /home/czl/pa/a-trans/a-hisat2/*_sorted.bam
+do
+{
+name=${i%_sorted.bam}
+out=${name#/home/czl/pa/a-trans/a-hisat2/}
+stringtie -B -p 36 -o /home/czl/pa/a-trans/a-stringtie/${out}_output.gtf -G /home/czl/pa/a-gene/genomic.gff \
+-l ${out} -A /home/czl/pa/a-trans/a-stringtie/${out}_output.tab ${name}_sorted.bam
+}
+done
+
+#将每个转录本进行merge成一个gtf文件
+#!/bin/bash
+ls /home/czl/pa/a-trans/a-stringtie/*.gtf > gtf.txt
+stringtie --merge -p 16 -G /home/czl/pa/a-gene/genomic.gff -o /home/czl/pa/a-trans/a-stringtie/a_merge.gtf /home/czl/pa/a-trans/a-stringtie/gtf.txt > merge.log
+#得到一个gtf文件
+
+#利用merge得到的gtf重新对各个样本做定量 
+#!(如果用fcounts，此步不需要)
+#!/bin/bash
+for i in /home/czl/pa/a-trans/a-hisat2/*_sorted.bam
+do
+{
+name=${i%_sorted.bam}
+out=${name#/home/czl/pa/a-trans/a-hisat2/}
+stringtie -e -B -p 36 -o /home/czl/pa/a-trans/a-stringtie/r-merge/${out}_output.gtf -G /home/czl/pa/a-trans/a-stringtie/a_merge.gtf \
+-l ${out} -A /home/czl/pa/a-trans/a-stringtie/r-merge/${out}_abundance.tsv ${name}_sorted.bam
+}
+done
+
+#输出文件：(1) e2t.ctab, (2) e_data.ctab, (3) i2t.ctab, (4) i_data.ctab, and (5) t_data.ctab
+同时还有各个相应样本的.tab文件和.gtf文件
+
