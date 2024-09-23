@@ -1,0 +1,159 @@
+前期软件准备
+fastqc：查看质控质量
+multiqc：应用同上
+kneaddata：质量控制 （含bowtie2和samtools）--这个软件目前实测没有成功，继续用bowtie2和											trimmomatic分开跑
+megahit：reads组装
+cd-hit：聚类去冗余
+kraken2：物种分类注释
+prodigal：原核生物基因预测
+diamond：功能注释
+humann2：功能组成及丰度信息（需要python==2.7环境。含metaphlan2：也可查看物种组成）
+
+1.下载数据
+#!/bin/bash
+prefetch='/home/xwc/app/sratoolkit.2.11.3-centos_linux64/bin/prefetch'
+out_dir='/home/czl/metagene/metaraw'
+#熊猫数据
+SRA_list='/home/czl/metagene/down.txt'
+$prefetch -O $out_dir --option-file $SRA_list
+
+2.转换格式
+#!/bin/bash
+fasterq_dump='/home/czl/soft/sratoolkit.2.11.3-centos_linux64/bin/fasterq-dump'
+out_dir='/home/czl/metagene/meta-raw/meta-pb'
+sra=(SRR5130560 SRR5130600 SRR5149862 SRR5149902 SRR5149913 SRR5149961)
+for ((i=0;i<=5;i++))
+do
+{
+${fasterq_dump} -p -e 16 --split-3 -O ${out_dir} /home/czl/metagene/meta-raw/meta-pb/${sra[i]}/${sra[i]}.sra
+}
+done
+#-p 可以显示进程
+#-e 24 使用24个线程
+#另外fasterq-dump不能使用压缩命令。
+
+3.查看质量
+#!/bin/bash
+out_dir='/home/czl/metagene/meta-fastqc/meta-fastqc-bamboorat'
+for i in /home/czl/metagene/meta-raw/meta-bamboorat/*_1.fastq
+do
+{
+name=${i%_1.fastq}
+fastqc -t 36 -o ${out_dir} ${name}_1.fastq ${name}_2.fastq
+}
+done
+#输出每个基因文件的质控报告
+multiqc /home/czl/metagene/meta-fastqc
+#输出网页版的质控报告
+
+4.质控&去除宿主基因组
+#首先将fasta文件压缩成fasta.gz文件
+#!/bin/bash
+sra=(SRR5130537 SRR5130560 SRR5130600 SRR5149862 SRR5149902 SRR5149913 SRR5149961)
+for ((i=0;i<=6;i++))
+do
+{
+gzip -c ${sra[i]}_1.fastq > ${sra[i]}_1.fastq.gz
+gzip -c ${sra[i]}_2.fastq > ${sra[i]}_2.fastq.gz
+}
+done
+
+#trimmomatic进行质控
+#!/bin/bash
+sra=(SRR5130537 SRR5130560 SRR5130600 SRR5149862 SRR5149902 SRR5149913 SRR5149961)
+for ((i=0;i<=6;i++))
+do
+{
+java -jar /home/czl/soft/trimmomatic-0.39/trimmomatic-0.39.jar PE -threads 16 -phred33 /home/czl/metagene/meta-raw/meta-pb/${sra[i]}_R1.fastq.gz /home/czl/metagene/meta-raw/meta-pb/${sra[i]}_R2.fastq.gz \
+-baseout /home/czl/metagene/meta-trimmomatic/${sra[i]}_t.fastq.gz \
+ILLUMINACLIP:/home/czl/soft/trimmomatic-0.39/adapters/TruSeq3-PE.fa:2:30:10:2:true SLIDINGWINDOW:4:15 LEADING:3 TRAILING:3 MINLEN:36
+}
+done
+
+#bowtie2对比
+#建立索引
+bowtie2-build ~/metagene/meta-raw/ckgenome/panda-ckgenome.fa panda-gene
+#参考基因组目录+index名字（注意在相应的index目录下运行）
+#进行比对并且去除宿主基因组
+#!/bin/bash
+sra=(SRR5130537 SRR5130560 SRR5130600 SRR5149862 SRR5149902 SRR5149913 SRR5149961)
+for ((i=0;i<=6;i++))
+do
+{
+bowtie2 -p 32 -x /home/czl/metagene/meta-raw/meta-index/panda-gene \
+-1 /home/czl/metagene/meta-trimmomatic/${sra[i]}_t_1P.fastq.gz -2 /home/czl/metagene/meta-trimmomatic/${sra[i]}_t_2P.fastq.gz \
+-S /home/czl/metagene/meta-bowtie2/${sra[i]}.sam --un-conc-gz /home/czl/metagene/meta-bowtie2/${sra[i]}.bowtie2.fastq.gz
+}
+done
+#输出：sam文件以及去除宿主基因组后的fastq文件
+
+#将去除宿主基因组之后的文件再次看质控质量
+#!/bin/bash
+out_dir='/home/czl/metagene/meta-fastqc/meta-fastqc-bowtie2'
+sra=(SRR5130537 SRR5130560 SRR5130600 SRR5149862 SRR5149902 SRR5149913 SRR5149961)
+for ((i=0;i<=6;i++))
+do
+{
+fastqc -t 16 -o ${out_dir} /home/czl/metagene/meta-bowtie2/${sra[i]}.bowtie2.fastq.1.gz /home/czl/metagene/meta-bowtie2/${sra[i]}.bowtie2.fastq.2.gz
+}
+done
+
+#此步骤多余
+{
+#samtools转换sam文件为bam文件排序并建立索引
+#!/bin/bash
+sra=(SRR5130537 SRR5130560 SRR5130600 SRR5149862 SRR5149902 SRR5149913 SRR5149961)
+for ((i=0;i<=6;i++))
+do
+   {
+   samtools view -S ${sra[i]}.sam -b > ${sra[i]}.bam
+   samtools sort ${sra[i]}.bam -o ${sra[i]}_sorted.bam
+   samtools index ${sra[i]}_sorted.bam
+   }
+done
+}
+
+5.物种注释
+#!/bin/bash
+sra=(SRR5130537 SRR5130560 SRR5130600 SRR5149862 SRR5149902 SRR5149913 SRR5149961)
+for ((i=0;i<=6;i++))
+do
+{
+kraken2 --threads 16 --use-mpa-style --output /home/czl/metagene/meta-kraken2/kraken2_${sra[i]}_output --report /home/czl/metagene/meta-kraken2/kraken2_${sra[i]}_report.txt \
+--db /home/czl/metagene/meta-kraken2/minikraken2_v1_8GB --gzip-compressed --paired /home/czl/metagene/meta-bowtie2/${sra[i]}.bowtie2.fastq.1.gz /home/czl/metagene/meta-bowtie2/${sra[i]}.bowtie2.fastq.2.gz
+}
+done
+
+6.宏基因组组装
+#!/bin/bash
+for i in /home/czl/metagene/meta-bowtie2/meta-bowtie2-panda/*.fastq.1.gz
+do
+{
+name=${i%.fastq.1.gz}
+megahit -t 32 -m 0.90 --min-contig-len 300 -1 ${name}.fastq.1.gz -2 ${name}.fastq.2.gz -o ${name}_contig_out
+}
+done
+#输出文件一系列文件，主要文件为.fa文件
+
+7.宏基因组基因预测
+#!/bin/bash
+sra=(SRR5130537 SRR5130560 SRR5130600 SRR5149862 SRR5149902 SRR5149913 SRR5149961)
+for ((i=0;i<=6;i++))
+do
+{
+prodigal -i /home/czl/metagene/meta-megahit/meta-megahit-panda/${sra[i]}.bowtie2_contig_out/final.contigs.fa -o /home/czl/metagene/meta-prodigal/meta-prodigal-panda/${sra[i]}_contig_out.fna \
+-a /home/czl/metagene/meta-prodigal/meta-prodigal-panda/${sra[i]}_protein.faa -d /home/czl/metagene/meta-prodigal/meta-prodigal-panda/${sra[i]}.nucleotide.fna -p meta
+}
+done
+#输出文件为蛋白质.faa文件，核酸.fna文件，还有一个contig out.fna文件
+
+8.去冗余
+#!/bin/bash
+for i in /home/czl/metagene/meta-prodigal/meta-prodigal-panda/*.nucleotide.fna
+do
+{
+name=${i%.nucleotide.fna}
+cd-hit-est -i ${name}.nucleotide.fna -o ${name}.nr.fna -M 32000 -T 32 -c 0.95 -aS 0.9 
+}
+done
+#输出文件为去冗余后的.fna文件与.fna.clstr文件
