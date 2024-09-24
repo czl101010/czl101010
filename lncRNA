@@ -192,3 +192,49 @@ grep -Ff ./lncRNA_by_FPKM_id -w ./filter4_nocoding_trans.gtf >lncRNA.gtf
 -a /big/czl/pa/a-trans/a-lncRNA/06.gffcompare/filter3/lncRNA.gtf -o /big/czl/pa/a-trans/a-lncRNA/07.fcounts/lncRNA/count_out_lncRNA.txt \
 /big/czl/pa/a-trans/a-lncRNA/04.hisat2/*_sorted.bam
 
+5.lncRNA功能注释&蛋白质互作预测
+#创建环境
+conda create -n lnc python=2.7.13
+python版本过低
+conda install python=3.9
+#安转依赖包
+pip install numpy       # numpy v1.16.6
+pip install Theano      # Theano v1.0.5
+pip install pandas      # pandas v0.24.2
+pip install h5py        # h5py v2.10.0
+R --version 3.5.2
+R下载igraph包
+R
+install.packages("igraph")
+
+#安装keras-3.5.0
+wget https://github.com/keras-team/keras/archive/refs/tags/v3.5.0.zip
+unzip keras-3.5.0.zip
+pip install pathlib
+python setup.py install
+#报error：ERROR: pip's dependency resolver does not currently take into account all the 
+  packages that are installed. This behaviour is the source of the following dependency 
+  conflicts.keras 3.5.0 requires absl-py, which is not installed.keras 3.5.0 requires 
+  packaging, which is not installed.
+还需要下载相应依赖包
+pip install numpy
+pip install absl-py packaging
+python setup.py install
+安装成功
+
+#在github下载lncAdeep
+chmod + x configure
+./configure
+source ~/.bash_profile
+
+#使用
+使用时只能用python2，将其换回来
+conda install python=2.7.13
+提取出能够与转录本进行互作的lncRNA
+awk -F " " '{print $1}' lncRNA_expression_targetgene_R.txt | uniq > lncRNA_expression_targetgene_R_id.txt
+#有276个lncRNA
+#提取序列
+grep -Ff lncRNA_expression_targetgene_R_id.txt -w 06.gffcompare/lncRNA.gtf >lncRNA_expression_targetgene_R_id.gtf
+gffread -w ./lncRNA_expression_targetgene_R_id.fa -g /big/czl/pa/a-gene/pagene/GCA_025594305.2_ASM2559430v2_genomic.fna ./lncRNA_expression_targetgene_R_id.gtf
+#运行程序
+python LncADeep.py -MODE anno -l ~/czl-link/pa/a-trans/a-lncRNA/09.lnc_annotate/lncRNA_expression_targetgene_R_id.fa -o ../test -th 20
